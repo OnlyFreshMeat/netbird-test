@@ -1,0 +1,92 @@
+name: Build Test MSI Package
+
+on:
+  push:
+    branches:
+      - main
+      - test-*
+  workflow_dispatch:
+
+env:
+  PRODUCT_NAME: "NetBird"
+  COPYRIGHT: "NetBird GmbH"
+  NETBIRD_VERSION: "0.60.7"
+
+jobs:
+  build-windows-msi:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+
+      - name: Install goversioninfo
+        run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@233067e
+
+      - name: Generate windows resources for netbird.exe
+        run: |
+          goversioninfo -icon client/ui/assets/netbird.ico -manifest client/manifest.xml -product-name "${{ env.PRODUCT_NAME }}" -copyright "${{ env.COPYRIGHT }}" -ver-major 0 -ver-minor 60 -ver-patch 7 -ver-build 0 -file-version 0.60.7.0 -product-version 0.60.7.0 -o client/resources_windows_amd64.syso
+
+      - name: Generate windows resources for netbird-ui.exe
+        run: |
+          goversioninfo -64 -icon client/ui/assets/netbird.ico -manifest client/ui/manifest.xml -product-name "${{ env.PRODUCT_NAME }}-UI" -copyright "${{ env.COPYRIGHT }}" -ver-major 0 -ver-minor 60 -ver-patch 7 -ver-build 0 -file-version 0.60.7.0 -product-version 0.60.7.0 -o client/ui/resources_windows_amd64.syso
+
+      - name: Build netbird.exe
+        run: |
+          cd client
+          $env:CGO_ENABLED="0"
+          $env:GOOS="windows"
+          $env:GOARCH="amd64"
+          go build -tags load_wgnt_from_rsrc -ldflags "-s -w -X github.com/netbirdio/netbird/version.version=${{ env.NETBIRD_VERSION }}" -o ../dist/netbird_windows_amd64/netbird.exe
+        shell: pwsh
+
+      - name: Build netbird-ui.exe
+        run: |
+          cd client/ui
+          $env:CGO_ENABLED="1"
+          $env:GOOS="windows"
+          $env:GOARCH="amd64"
+          go build -ldflags "-s -w -H windowsgui -X github.com/netbirdio/netbird/version.version=${{ env.NETBIRD_VERSION }}" -o ../../dist/netbird_windows_amd64/netbird-ui.exe
+        shell: pwsh
+
+      - name: Download wintun.dll
+        run: |
+          Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile wintun.zip
+          Expand-Archive -Path wintun.zip -DestinationPath wintun
+          Copy-Item wintun/wintun/bin/amd64/wintun.dll dist/netbird_windows_amd64/
+        shell: pwsh
+
+      - name: Download Mesa3D OpenGL DLLs
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/pal1000/mesa-dist-win/releases/download/24.3.3/mesa3d-24.3.3-release-msvc.7z" -OutFile mesa3d.7z
+          7z x mesa3d.7z -omesa3d x64/opengl32.dll x64/libgallium_wgl.dll x64/libglapi.dll
+          Copy-Item mesa3d/x64/opengl32.dll dist/netbird_windows_amd64/
+          Copy-Item mesa3d/x64/libgallium_wgl.dll dist/netbird_windows_amd64/
+          Copy-Item mesa3d/x64/libglapi.dll dist/netbird_windows_amd64/
+        shell: pwsh
+
+      - name: Install WiX Toolset
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: Build MSI package
+        run: |
+          wix build client/netbird.wxs -arch x64 -d ArchSuffix=amd64 -d ProcessorArchitecture=x64 -ext WixToolset.Util.wixext -o netbird-${{ env.NETBIRD_VERSION }}-test-dns-fix-amd64.msi
+        shell: pwsh
+
+      - name: Upload MSI package
+        uses: actions/upload-artifact@v4
+        with:
+          name: netbird-msi-package
+          path: netbird-${{ env.NETBIRD_VERSION }}-test-dns-fix-amd64.msi
+          retention-days: 30
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: netbird-windows-binaries
+          path: dist/netbird_windows_amd64/
+          retention-days: 7

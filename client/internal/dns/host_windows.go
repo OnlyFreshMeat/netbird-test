@@ -14,6 +14,8 @@ import (
 	"github.com/hashicorp/go-multierror"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/windows/registry"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 
 	nberrors "github.com/netbirdio/netbird/client/errors"
 	"github.com/netbirdio/netbird/client/internal/statemanager"
@@ -265,6 +267,12 @@ func (r *registryConfigurator) addDNSMatchPolicy(domains []string, ip netip.Addr
 	}
 
 	log.Infof("added %d separate NRPT entries. Domain list: %s", len(domains), domains)
+
+	// Notify DNS Client service about NRPT changes
+	if err := notifyDNSCacheServiceParamChange(); err != nil {
+		log.Warnf("failed to notify DNS Client service about NRPT changes: %v. DNS policies may not take effect until service restart", err)
+	}
+
 	return len(domains), nil
 }
 
@@ -423,6 +431,11 @@ func (r *registryConfigurator) removeDNSMatchPolicies() error {
 		}
 	}
 
+	// Notify DNS Client service about NRPT changes
+	if err := notifyDNSCacheServiceParamChange(); err != nil {
+		log.Warnf("failed to notify DNS Client service about NRPT removal: %v. Old DNS policies may persist until service restart", err)
+	}
+
 	if err := refreshGroupPolicy(); err != nil {
 		merr = multierror.Append(merr, fmt.Errorf("refresh group policy: %w", err))
 	}
@@ -471,6 +484,36 @@ func refreshGroupPolicy() error {
 		return fmt.Errorf("RefreshPolicyEx failed")
 	}
 
+	return nil
+}
+
+// notifyDNSCacheServiceParamChange sends a SERVICE_CONTROL_PARAMCHANGE control to the DNS Client service.
+// This notifies the service to reload its NRPT (Name Resolution Policy Table) configuration from the registry.
+// Without this notification, NRPT entries don't take effect until the service is manually restarted.
+func notifyDNSCacheServiceParamChange() error {
+	// Connect to Service Control Manager
+	manager, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("connect to Service Control Manager: %w", err)
+	}
+	defer manager.Disconnect()
+
+	// Open Dnscache service with SERVICE_PAUSE_CONTINUE access
+	// This access level is sufficient for sending PARAMCHANGE control
+	service, err := manager.OpenService("Dnscache")
+	if err != nil {
+		return fmt.Errorf("open DNS Client service: %w", err)
+	}
+	defer service.Close()
+
+	// Send PARAMCHANGE control to notify service about configuration changes
+	// This causes the service to reload NRPT configuration from the registry
+	_, err = service.Control(svc.ParamChange)
+	if err != nil {
+		return fmt.Errorf("send PARAMCHANGE control: %w", err)
+	}
+
+	log.Debugf("notified DNS Client service about NRPT changes")
 	return nil
 }
 
