@@ -69,20 +69,18 @@ jobs:
           Copy-Item mesa3d/x64/libglapi.dll dist/netbird_windows_amd64/
         shell: pwsh
 
-      - name: Install WiX Toolset
-        run: dotnet tool install --global wix --version 5.0.2
+      - name: Install WiX Toolset v4
+        run: dotnet tool install --global wix --version 4.0.5
 
       - name: Install WiX Util Extension
-        run: wix extension add WixToolset.Util.wixext
-        shell: pwsh
-
-      - name: Set NETBIRD_VERSION environment variable
-        run: echo "NETBIRD_VERSION=${{ env.NETBIRD_VERSION }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        run: wix extension add -g WixToolset.Util.wixext/4.0.5
         shell: pwsh
 
       - name: Build MSI package
         run: |
           wix build client/netbird.wxs -arch x64 -d ArchSuffix=amd64 -d ProcessorArchitecture=x64 -ext WixToolset.Util.wixext -o netbird-${{ env.NETBIRD_VERSION }}-test-dns-fix-amd64.msi
+        env:
+          NETBIRD_VERSION: ${{ env.NETBIRD_VERSION }}
         shell: pwsh
 
       - name: Upload MSI package
